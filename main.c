@@ -11,28 +11,36 @@
 
 #define MAXEVENTS 4096
 
-static int
-make_socket_non_blocking (int sfd)
+struct process_t {
+  int sock;
+  int status;
+  int fd;
+  int read_pos;
+  int write_pos;
+  int total_length;
+  char filename[255];
+  char buf[4096];
+};
+
+static struct process_t processes[1024];
+
+int setNonblocking(int fd)
 {
-    int flags, s;
+    int flags;
 
-    flags = fcntl (sfd, F_GETFL, 0);
-    if (flags == -1)
-    {
-        perror ("fcntl");
-        return -1;
-    }
-
-    flags |= O_NONBLOCK;
-    s = fcntl (sfd, F_SETFL, flags);
-    if (s == -1)
-    {
-        perror ("fcntl");
-        return -1;
-    }
-
-    return 0;
+    /* If they have O_NONBLOCK, use the Posix way to do it */
+#if defined(O_NONBLOCK)
+    /* Fixme: O_NONBLOCK is defined but broken on SunOS 4.1.x and AIX 3.2.5. */
+    if (-1 == (flags = fcntl(fd, F_GETFL, 0)))
+        flags = 0;
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+#else
+    /* Otherwise, use the old way of doing it */
+    flags = 1;
+    return ioctl(fd, FIOBIO, &flags);
+#endif
 }
+
 
 static int
 create_and_bind (char *port)
@@ -140,9 +148,9 @@ int sendfile(char *filename, int sock) {
         } else if (bytes_read > 0) {
             int done_write = 0;
             int result = write_all(sock, buf, bytes_read);
-	    if (result < 0) {
-	      done = 1;
-	    }
+            if (result < 0) {
+                done = 1;
+            }
         }
     }
     close(filefd);
@@ -166,7 +174,7 @@ main (int argc, char *argv[])
     if (sfd == -1)
         abort ();
 
-    s = make_socket_non_blocking (sfd);
+    s = setNonblocking (sfd);
     if (s == -1)
         abort ();
 
@@ -256,7 +264,7 @@ main (int argc, char *argv[])
 
                     /* Make the incoming socket non-blocking and add it to the
                        list of fds to monitor. */
-                    s = make_socket_non_blocking (infd);
+                    s = setNonblocking (infd);
                     if (s == -1)
                         abort ();
 
