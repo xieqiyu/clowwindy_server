@@ -385,7 +385,7 @@ create_and_bind (char *port)
 void init_processes() {
   int i = 0;
   for(;i < MAX_PORCESS; i ++) {
-    processes[i].sock = -1;
+    processes[i].sock = NO_SOCK;
   }
   
 }
@@ -398,13 +398,14 @@ main (int argc, char *argv[])
 
     if (argc != 2)
     {
-        fprintf (stderr, "Usage: %s [port]\n", argv[0]);
+        fprintf (stderr, "Usage: %s [port] [doc root]\n", argv[0]);
         exit (EXIT_FAILURE);
     }
     
     init_processes();
 
-    listen_sock = create_and_bind (PORT);
+    listen_sock = create_and_bind (argv[1]);
+    doc_root = argv[2];
     if (listen_sock == -1)
         abort ();
 

@@ -396,15 +396,16 @@ main (int argc, char *argv[])
     int s;
     struct epoll_event *events;
 
-    if (argc != 2)
+    if (argc != 3)
     {
-        fprintf (stderr, "Usage: %s [port]\n", argv[0]);
+        fprintf (stderr, "Usage: %s [port] [doc root]\n", argv[0]);
         exit (EXIT_FAILURE);
     }
     
     init_processes();
 
-    listen_sock = create_and_bind (PORT);
+    listen_sock = create_and_bind (argv[1]);
+    doc_root = argv[2];
     if (listen_sock == -1)
         abort ();
 

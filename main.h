@@ -1,7 +1,7 @@
 
 #define MAXEVENTS	4096
 #define MAX_PORCESS	200
-#define BUF_SIZE	4096*4
+#define BUF_SIZE	4096 * 4
 #define DOC_ROOT "/var/www/"
 
 #define PORT 8080
