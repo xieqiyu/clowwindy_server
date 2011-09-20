@@ -14,6 +14,8 @@
 #define STATUS_SEND_RESPONSE_HEADER	1
 #define STATUS_SEND_RESPONSE		2
 
+#define NO_SOCK -1
+
 #define header_404 "HTTP/1.1 404 Not found\r\nServer: myserver/1.0\r\nContent-Type: text/html\r\n\r\n<h1>not found</h1>"
 #define header_200 "HTTP/1.1 200 OK\r\nServer: myserver/1.0\r\nContent-Type: text/html\r\n\r\n"
 
@@ -23,6 +25,7 @@ static struct process_t processes[MAX_PORCESS];
 static int listen_sock;
 static int efd;
 static struct epoll_event event;
+static char *doc_root;
 
 int setNonblocking(int fd)
 {
@@ -63,7 +66,7 @@ struct process_t* accept_sock(int listen_sock) {
     // 在ET模式下必须循环accept到返回-1为止
     while (1)
     {
-        struct process_t* process = find_process_by_sock(-1);
+        struct process_t* process = find_process_by_sock(NO_SOCK);
         if (process == 0) {
             // 请求已满
             return;
@@ -207,7 +210,6 @@ int write_all(struct process_t *process, char* buf, int n) {
     int total_bytes_write = 0;
     while (!done_write && total_bytes_write != n) {
         int bytes_write = write(process->sock, buf + total_bytes_write, n - total_bytes_write);
-// 	printf("bytes_write: %d\n", bytes_write);
         if (bytes_write == -1) {
             if (errno != EAGAIN)
             {
@@ -278,7 +280,6 @@ void send_response(struct process_t *process) {
             {
                 if (errno != EAGAIN)
                 {
-                    perror ("read");
                     handle_error(process, "read file");
                     return;
                 }
@@ -299,7 +300,7 @@ void send_response(struct process_t *process) {
 void cleanup(struct process_t *process) {
     close(process->fd);
     close(process->sock);
-    process->sock = -1;
+    process->sock = NO_SOCK;
     reset_process(process);
 }
 
@@ -403,7 +404,7 @@ main (int argc, char *argv[])
     
     init_processes();
 
-    listen_sock = create_and_bind (argv[1]);
+    listen_sock = create_and_bind (PORT);
     if (listen_sock == -1)
         abort ();
 
