@@ -8,21 +8,21 @@
 #include <fcntl.h>
 #include <sys/epoll.h>
 #include <errno.h>
+#include "main.h"
 
-#define MAXEVENTS 4096
+#define STATUS_READ_REQUEST_HEADER	0
+#define STATUS_SEND_RESPONSE_HEADER	1
+#define STATUS_SEND_RESPONSE		2
 
-struct process_t {
-  int sock;
-  int status;
-  int fd;
-  int read_pos;
-  int write_pos;
-  int total_length;
-  char filename[255];
-  char buf[4096];
-};
+#define header_404 "HTTP/1.1 404 Not found\r\nServer: myserver/1.0\r\nContent-Type: text/html\r\n\r\n<h1>not found</h1>"
+#define header_200 "HTTP/1.1 200 OK\r\nServer: myserver/1.0\r\nContent-Type: text/html\r\n\r\n"
 
-static struct process_t processes[1024];
+
+static struct process_t processes[MAX_PORCESS];
+
+static int listen_sock;
+static int efd;
+static struct epoll_event event;
 
 int setNonblocking(int fd)
 {
@@ -41,13 +41,303 @@ int setNonblocking(int fd)
 #endif
 }
 
+struct process_t* find_process_by_sock(int sock) {
+    int i;
+    for (i=0;i<MAX_PORCESS;i++) {
+        if (processes[i].sock == sock) {
+            return &processes[i];
+        }
+    }
+    return 0;
+}
+
+void reset_process(struct process_t* process)
+{
+    process->read_pos = 0;
+    process->write_pos = 0;
+}
+
+
+struct process_t* accept_sock(int listen_sock) {
+    int s;
+    // 在ET模式下必须循环accept到返回-1为止
+    while (1)
+    {
+        struct process_t* process = find_process_by_sock(-1);
+        if (process == 0) {
+            // 请求已满
+            return;
+        }
+        struct sockaddr in_addr;
+        socklen_t in_len;
+        int infd;
+        char hbuf[NI_MAXHOST], sbuf[NI_MAXSERV];
+
+        in_len = sizeof in_addr;
+        infd = accept (listen_sock, &in_addr, &in_len);
+        if (infd == -1)
+        {
+            if ((errno == EAGAIN) ||
+                    (errno == EWOULDBLOCK))
+            {
+                /* We have processed all incoming
+                   connections. */
+                break;
+            }
+            else
+            {
+                perror ("accept");
+                break;
+            }
+        }
+
+        getnameinfo (&in_addr, in_len,
+                     hbuf, sizeof hbuf,
+                     sbuf, sizeof sbuf,
+                     NI_NUMERICHOST | NI_NUMERICSERV);
+        /* Make the incoming socket non-blocking and add it to the
+           list of fds to monitor. */
+        s = setNonblocking (infd);
+        if (s == -1)
+            abort ();
+
+        //添加监视sock的读取状态
+        event.data.fd = infd;
+        event.events = EPOLLIN | EPOLLET;
+        s = epoll_ctl (efd, EPOLL_CTL_ADD, infd, &event);
+        if (s == -1)
+        {
+            perror ("epoll_ctl");
+            abort ();
+        }
+        // slow, unneccessary
+// 	memset(process,0,sizeof(struct process_t));
+        reset_process(process);
+        process->sock = infd;
+        process->status = STATUS_READ_REQUEST_HEADER;
+    }
+}
+
+void read_request(struct process_t* process) {
+    int sock = process->sock, s;
+    char* buf=process->buf;
+    char read_complete = 0;
+
+    ssize_t count;
+
+    while (1) {
+        count = read (sock, buf + process->read_pos, BUF_SIZE - process->read_pos);
+        if (count == -1)
+        {
+            if (errno != EAGAIN)
+            {
+                handle_error (process, "read request");
+                return;
+            } else {
+                //errno == EAGAIN表示读取完毕
+                break;
+            }
+        }
+        else if (count == 0)
+        {
+            // 被客户端关闭连接，这不应该发生
+            handle_error (process, "connection closed by client");
+            return;
+        } else if (count > 0) {
+            process->read_pos += count;
+        }
+    }
+
+    // determine whether the request is complete
+    buf[process->read_pos]=0;
+    read_complete = (strstr(buf, "\n\n") != 0) || (strstr(buf, "\r\n\r\n") != 0);
+
+    int error = 0;
+    if (read_complete) {
+	//重置读取位置
+	reset_process(process);
+        // get GET info
+        if (strncmp(buf, "GET", 3) == 0) {
+            // get first line
+            int n_loc = (int)strchr(buf, '\n');
+            int space_loc = (int)strchr(buf + 4, ' ');
+            if (n_loc > space_loc) {
+                char path[255];
+                int len = space_loc - (int)buf - 4;
+                strncpy(path, buf+4, len);
+                path[len] = 0;
+                //                             printf("path: %s\n", path);
+                //                             printf("\n");
+
+                char fullname[256];
+                char *prefix = DOC_ROOT;
+                strcpy(fullname, prefix);
+                strcpy(fullname + strlen(prefix), path);
+                int fd = open(fullname, O_RDONLY);
+                process->fd = fd;
+                if (fd<0) {
+                    process->response_code = 404;
+                } else {
+                    process->response_code = 200;
+                }
+                process->status = STATUS_SEND_RESPONSE_HEADER;
+                //修改此sock的监听状态，改为监视写状态
+                event.data.fd = process->sock;
+                event.events = EPOLLOUT | EPOLLET;
+                s = epoll_ctl (efd, EPOLL_CTL_MOD, process->sock, &event);
+                if (s == -1)
+                {
+                    perror ("epoll_ctl");
+                    abort ();
+                }
+                send_response_header(process);
+            } else {
+                error = 400;
+            }
+
+        } else {
+            error = 401;
+        }
+    }
+}
+
+
+int write_all(struct process_t *process, char* buf, int n) {
+    int done_write = 0;
+    int total_bytes_write = 0;
+    while (!done_write && total_bytes_write != n) {
+        int bytes_write = write(process->sock, buf + total_bytes_write, n - total_bytes_write);
+// 	printf("bytes_write: %d\n", bytes_write);
+        if (bytes_write == -1) {
+            if (errno != EAGAIN)
+            {
+                handle_error (process, "write");
+                return 0;
+            } else {
+                // 写入到缓冲区已满了
+                return total_bytes_write;
+            }
+        } else {
+            total_bytes_write += bytes_write;
+        }
+    }
+    return total_bytes_write;
+}
+
+
+void send_response_header(struct process_t *process) {
+    if (process->response_code != 200) {
+        int bytes_writen = write_all(process, header_404+process->write_pos, strlen(header_404)-process->write_pos);
+        if (bytes_writen == strlen(header_404) + process->write_pos) {
+            // 写入完毕
+            cleanup(process);
+        } else {
+            process->write_pos += bytes_writen;
+        }
+    } else {
+        int bytes_writen = write_all(process, header_200+process->write_pos, strlen(header_200)-process->write_pos);
+        if (bytes_writen == strlen(header_200) + process->write_pos) {
+            // 写入完毕
+            process->status = STATUS_SEND_RESPONSE;
+            send_response(process);
+        } else {
+            process->write_pos += bytes_writen;
+        }
+    }
+}
+
+void send_response(struct process_t *process) {
+    //文件已经读完
+    char end_of_file = 0;
+    while (1) {
+        //检查有无已读取还未写入的
+        int size_remaining = process->read_pos - process->write_pos;
+        if (size_remaining > 0) {
+            // 写入
+            int bytes_writen = write_all(process, process->buf+process->write_pos, size_remaining);
+            process->write_pos += bytes_writen;
+            // 接下来判断是否写入完毕，如果是，继续读文件，否则return
+            if (bytes_writen != size_remaining) {
+                // 缓冲区满
+                return;
+            }
+        }
+        if (end_of_file) {
+                //读写完毕，关闭sock和文件
+                cleanup(process);
+                return;
+        }
+        //读取文件
+        int done = 0;
+        //用同步的方式读取到缓冲区满
+        process -> read_pos = 0;
+        process -> write_pos = 0;
+        while (process->read_pos < BUF_SIZE) {
+            int bytes_read = read(process->fd, process->buf, BUF_SIZE - process->read_pos);
+            if (bytes_read == -1)
+            {
+                if (errno != EAGAIN)
+                {
+                    handle_error(process, "read file");
+                    return;
+                }
+                break;
+            }
+            else if (bytes_read == 0)
+            {
+                end_of_file = 1;
+                break;
+            } else if (bytes_read > 0) {
+                process->read_pos += bytes_read;
+            }
+        }
+    }
+
+}
+
+void cleanup(struct process_t *process) {
+    close(process->fd);
+    close(process->sock);
+    process->sock = -1;
+    reset_process(process);
+}
+
+void handle_error(struct process_t* process, char* error_string)
+{
+    cleanup(process);
+    perror(error_string);
+}
+
+
+void handle_request(int sock) {
+    if (sock == listen_sock) {
+        accept_sock(sock);
+    } else {
+        struct process_t* process = find_process_by_sock(sock);
+        if (process != 0) {
+            switch (process->status) {
+            case STATUS_READ_REQUEST_HEADER:
+                read_request(process);
+                break;
+            case STATUS_SEND_RESPONSE_HEADER:
+                send_response_header(process);
+                break;
+            case STATUS_SEND_RESPONSE:
+                send_response(process);
+                break;
+            default:
+                break;
+            }
+        }
+    }
+}
 
 static int
 create_and_bind (char *port)
 {
     struct addrinfo hints;
     struct addrinfo *result, *rp;
-    int s, sfd;
+    int s, listen_sock;
 
     memset (&hints, 0, sizeof (struct addrinfo));
     hints.ai_family = AF_UNSPEC;     /* Return IPv4 and IPv6 choices */
@@ -63,20 +353,20 @@ create_and_bind (char *port)
 
     for (rp = result; rp != NULL; rp = rp->ai_next)
     {
-        sfd = socket (rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        listen_sock = socket (rp->ai_family, rp->ai_socktype, rp->ai_protocol);
         int opt = 1;
-        setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-        if (sfd == -1)
+        setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        if (listen_sock == -1)
             continue;
 
-        s = bind (sfd, rp->ai_addr, rp->ai_addrlen);
+        s = bind (listen_sock, rp->ai_addr, rp->ai_addrlen);
         if (s == 0)
         {
             /* We managed to bind successfully! */
             break;
         }
 
-        close (sfd);
+        close (listen_sock);
     }
 
     if (rp == NULL)
@@ -87,98 +377,40 @@ create_and_bind (char *port)
 
     freeaddrinfo (result);
 
-    return sfd;
+    return listen_sock;
 }
 
-int write_all(int fd, char* buf, int n) {
-    int done_write = 0;
-    int total_bytes_write = 0;
-    while (!done_write && total_bytes_write != n) {
-        int bytes_write = write(fd, buf + total_bytes_write, n - total_bytes_write);
-// 	printf("bytes_write: %d\n", bytes_write);
-        if (bytes_write <= 0) {
-            done_write = 1;
-            return -1;
-        } else {
-            total_bytes_write += bytes_write;
-        }
-    }
-    return 0;
-}
-
-#define header_404 "HTTP 404 Not found\nServer: myserver/1.0\nContent-Type: text/html\n\n<h1>not found</h1>"
-#define header_200 "HTTP 200 OK\nServer: myserver/1.0\nContent-Type: text/html\n\n"
-
-int sendfile(char *filename, int sock) {
-    char fullname[256];
-    char *prefix = "/var/www/";
-    strcpy(fullname, prefix);
-    strcpy(fullname + strlen(prefix), filename);
-    int filefd = open(fullname, O_RDONLY);
-    char *header = header_200;
-
-    if (filefd < 0) {
-        header = header_404;
-        write_all(sock, header, strlen(header));
-        return -1;
-    }
-
-    write_all(sock, header, strlen(header));
-    while (1) {
-        int done = 0;
-        char buf[4096];
-        int bytes_read = read(filefd, buf, sizeof(buf));
-        if (bytes_read == -1)
-        {
-            /* If errno == EAGAIN, that means we have read all
-               data. So go back to the main loop. */
-            if (errno != EAGAIN)
-            {
-                perror ("read");
-                done = 1;
-            }
-            break;
-        }
-        else if (bytes_read == 0)
-        {
-            /* End of file. The remote has closed the
-               connection. */
-            done = 1;
-            break;
-        } else if (bytes_read > 0) {
-            int done_write = 0;
-            int result = write_all(sock, buf, bytes_read);
-            if (result < 0) {
-                done = 1;
-            }
-        }
-    }
-    close(filefd);
+void init_processes() {
+  int i = 0;
+  for(;i < MAX_PORCESS; i ++) {
+    processes[i].sock = -1;
+  }
+  
 }
 
 int
 main (int argc, char *argv[])
 {
-    int sfd, s;
-    int efd;
-    struct epoll_event event;
+    int s;
     struct epoll_event *events;
 
-//     if (argc != 2)
-//     {
-//         fprintf (stderr, "Usage: %s [port]\n", argv[0]);
-//         exit (EXIT_FAILURE);
-//     }
+    if (argc != 2)
+    {
+        fprintf (stderr, "Usage: %s [port]\n", argv[0]);
+        exit (EXIT_FAILURE);
+    }
+    
+    init_processes();
 
-    sfd = create_and_bind (argv[1]);
-    if (sfd == -1)
+    listen_sock = create_and_bind (argv[1]);
+    if (listen_sock == -1)
         abort ();
 
-    s = setNonblocking (sfd);
+    s = setNonblocking (listen_sock);
     if (s == -1)
         abort ();
 
-    s = listen (sfd, SOMAXCONN);
+    s = listen (listen_sock, SOMAXCONN);
     if (s == -1)
     {
         perror ("listen");
@@ -192,9 +424,9 @@ main (int argc, char *argv[])
         abort ();
     }
 
-    event.data.fd = sfd;
+    event.data.fd = listen_sock;
     event.events = EPOLLIN | EPOLLET;
-    s = epoll_ctl (efd, EPOLL_CTL_ADD, sfd, &event);
+    s = epoll_ctl (efd, EPOLL_CTL_ADD, listen_sock, &event);
     if (s == -1)
     {
         perror ("epoll_ctl");
@@ -213,8 +445,7 @@ main (int argc, char *argv[])
         for (i = 0; i < n; i++)
         {
             if ((events[i].events & EPOLLERR) ||
-                    (events[i].events & EPOLLHUP) ||
-                    (!(events[i].events & EPOLLIN)))
+                    (events[i].events & EPOLLHUP))
             {
                 /* An error has occured on this fd, or the socket is not
                    ready for reading (why were we notified then?) */
@@ -223,151 +454,14 @@ main (int argc, char *argv[])
                 continue;
             }
 
-            else if (sfd == events[i].data.fd)
-            {
-                /* We have a notification on the listening socket, which
-                   means one or more incoming connections. */
-                while (1)
-                {
-                    struct sockaddr in_addr;
-                    socklen_t in_len;
-                    int infd;
-                    char hbuf[NI_MAXHOST], sbuf[NI_MAXSERV];
+            handle_request(events[i].data.fd);
 
-                    in_len = sizeof in_addr;
-                    infd = accept (sfd, &in_addr, &in_len);
-                    if (infd == -1)
-                    {
-                        if ((errno == EAGAIN) ||
-                                (errno == EWOULDBLOCK))
-                        {
-                            /* We have processed all incoming
-                               connections. */
-                            break;
-                        }
-                        else
-                        {
-                            perror ("accept");
-                            break;
-                        }
-                    }
-
-                    s = getnameinfo (&in_addr, in_len,
-                                     hbuf, sizeof hbuf,
-                                     sbuf, sizeof sbuf,
-                                     NI_NUMERICHOST | NI_NUMERICSERV);
-                    if (s == 0)
-                    {
-//                         printf("Accepted connection on descriptor %d "
-//                                "(host=%s, port=%s)\n", infd, hbuf, sbuf);
-                    }
-
-                    /* Make the incoming socket non-blocking and add it to the
-                       list of fds to monitor. */
-                    s = setNonblocking (infd);
-                    if (s == -1)
-                        abort ();
-
-                    event.data.fd = infd;
-                    event.events = EPOLLIN | EPOLLET;
-                    s = epoll_ctl (efd, EPOLL_CTL_ADD, infd, &event);
-                    if (s == -1)
-                    {
-                        perror ("epoll_ctl");
-                        abort ();
-                    }
-                }
-                continue;
-            }
-            else
-            {
-                /* We have data on the fd waiting to be read. Read and
-                   display it. We must read whatever data is available
-                   completely, as we are running in edge-triggered mode
-                   and won't get a notification again for the same
-                   data. */
-                int done = 0;
-
-                char buf[4096];
-                ssize_t totalcount = 0;
-                while (1)
-                {
-                    ssize_t count;
-
-                    count = read (events[i].data.fd, buf + totalcount, sizeof buf - totalcount);
-                    if (count == -1)
-                    {
-                        /* If errno == EAGAIN, that means we have read all
-                           data. So go back to the main loop. */
-                        if (errno != EAGAIN)
-                        {
-                            perror ("read");
-                            done = 1;
-                        }
-                        break;
-                    }
-                    else if (count == 0)
-                    {
-                        /* End of file. The remote has closed the
-                           connection. */
-                        done = 1;
-                        break;
-                    } else if (count > 0) {
-
-                        totalcount += count;
-                    }
-
-                    /* Write the buffer to standard output */
-                    s = write (1, buf + totalcount - count, count);
-                    if (s == -1)
-                    {
-                        perror ("write");
-                        abort ();
-                    }
-                }
-
-                int error = 0;
-                if (totalcount > 10) {
-                    // get GET info
-                    if (strncmp(buf, "GET", 3) == 0) {
-                        // get first line
-                        int n_loc = (int)strchr(buf, '\n');
-                        int space_loc = (int)strchr(buf + 4, ' ');
-                        if (n_loc > space_loc) {
-                            char path[255];
-                            int len = space_loc - (int)buf - 4;
-                            strncpy(path, buf+4, len);
-                            path[len] = 0;
-//                             printf("path: %s\n", path);
-//                             printf("\n");
-                            int result = sendfile(path, events[i].data.fd);
-                            done = 1;
-                        } else {
-                            error = 400;
-                        }
-
-                    } else {
-                        error = 401;
-                    }
-                }
-
-
-                if (done)
-                {
-//                     printf ("Closed connection on descriptor %d\n",
-//                             events[i].data.fd);
-
-                    /* Closing the descriptor will make epoll remove it
-                       from the set of descriptors which are monitored. */
-                    close (events[i].data.fd);
-                }
-            }
         }
     }
 
     free (events);
 
-    close (sfd);
+    close (listen_sock);
 
     return EXIT_SUCCESS;
 }
