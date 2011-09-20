@@ -2,9 +2,12 @@
 #define MAXEVENTS	4096
 #define MAX_PORCESS	200
 #define BUF_SIZE	4096 * 4
-#define DOC_ROOT "/var/www/"
+
+#define MAX_URL_LENGTH	128
 
 #define PORT 8080
+
+#define INDEX_FILE "/index.htm"
 
 struct process_t {
     int sock;

@@ -27,6 +27,10 @@ sys/epoll.h
 -
 errno.h
 -
+sys/stat.h
+-
+unistd.h
+-
 main.h
 /home/clowwindy/projects/epoll_test/main.h
 

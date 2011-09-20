@@ -8,6 +8,8 @@
 #include <fcntl.h>
 #include <sys/epoll.h>
 #include <errno.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include "main.h"
 
 #define STATUS_READ_REQUEST_HEADER	0
@@ -16,8 +18,9 @@
 
 #define NO_SOCK -1
 
-#define header_404 "HTTP/1.1 404 Not found\r\nServer: myserver/1.0\r\nContent-Type: text/html\r\n\r\n<h1>not found</h1>"
-#define header_200 "HTTP/1.1 200 OK\r\nServer: myserver/1.0\r\nContent-Type: text/html\r\n\r\n"
+#define header_404 "HTTP/1.0 404 Not found\r\nServer: myserver/1.0\r\nContent-Type: text/html\r\n\r\n<h1>Not found</h1>"
+#define header_400 "HTTP/1.0 400 Bad request\r\nServer: myserver/1.0\r\nContent-Type: text/html\r\n\r\n<h1>Bad request</h1>"
+#define header_200 "HTTP/1.0 200 OK\r\nServer: myserver/1.0\r\nContent-Type: text/html\r\n\r\n"
 
 
 static struct process_t processes[MAX_PORCESS];
@@ -121,6 +124,35 @@ struct process_t* accept_sock(int listen_sock) {
     }
 }
 
+// 根据目录名自动添加index.htm
+int get_index_file(char *filename_buf) {
+  struct stat stat_buf;
+  int s;
+  s = lstat(filename_buf, &stat_buf);
+  if(s == -1){
+    // 文件或目录不存在
+    return -1;
+  }
+  if(S_ISDIR(stat_buf.st_mode)) {
+    // 是目录，追加index.htm(l)
+    strcpy(filename_buf + strlen(filename_buf), INDEX_FILE);
+    // 再次判断是否是文件
+    s = lstat(filename_buf, &stat_buf);
+    if(s == -1 || S_ISDIR(stat_buf.st_mode)){
+      // 文件不存在，或者为目录
+      int len = strlen(filename_buf);
+      filename_buf[len] = 'l';
+      filename_buf[len + 1] = 0;
+      s = lstat(filename_buf, &stat_buf);
+      if(s == -1 || S_ISDIR(stat_buf.st_mode)){
+	// 文件不存在，或者为目录
+	return -1;
+      }
+    }
+  }
+  return 0;
+}
+
 void read_request(struct process_t* process) {
     int sock = process->sock, s;
     char* buf=process->buf;
@@ -167,19 +199,38 @@ void read_request(struct process_t* process) {
             if (n_loc > space_loc) {
                 char path[255];
                 int len = space_loc - (int)buf - 4;
+		if(len > MAX_URL_LENGTH) {
+                    process->response_code = 400;
+		    send_response_header(process);
+		    handle_error(processes, "bad request");
+		    return;
+		}
                 strncpy(path, buf+4, len);
                 path[len] = 0;
                 //                             printf("path: %s\n", path);
                 //                             printf("\n");
 
                 char fullname[256];
-                char *prefix = DOC_ROOT;
+                char *prefix = doc_root;
                 strcpy(fullname, prefix);
                 strcpy(fullname + strlen(prefix), path);
+		s = get_index_file(fullname);
+		if(s == -1){
+                    process->response_code = 404;
+		    process->status = STATUS_SEND_RESPONSE_HEADER;
+		    send_response_header(process);
+		    handle_error(processes, "not found");
+		    return;
+		}
+		
                 int fd = open(fullname, O_RDONLY);
                 process->fd = fd;
                 if (fd<0) {
                     process->response_code = 404;
+		    process->status = STATUS_SEND_RESPONSE_HEADER;
+		    send_response_header(process);
+		    handle_error(processes, "not found");
+		    return;
                 } else {
                     process->response_code = 200;
                 }
@@ -194,12 +245,8 @@ void read_request(struct process_t* process) {
                     abort ();
                 }
                 send_response_header(process);
-            } else {
-                error = 400;
-            }
+            } 
 
-        } else {
-            error = 401;
         }
     }
 }
@@ -396,7 +443,7 @@ main (int argc, char *argv[])
     int s;
     struct epoll_event *events;
 
-    if (argc != 2)
+    if (argc != 3)
     {
         fprintf (stderr, "Usage: %s [port] [doc root]\n", argv[0]);
         exit (EXIT_FAILURE);
