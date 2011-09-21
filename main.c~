@@ -195,7 +195,7 @@ struct process_t* accept_sock ( int listen_sock )
 }
 
 // 根据目录名自动添加index.htm
-int get_index_file ( char *filename_buf )
+int get_index_file ( char *filename_buf, struct stat *pstat )
 {
     struct stat stat_buf;
     int s;
@@ -225,6 +225,7 @@ int get_index_file ( char *filename_buf )
             }
         }
     }
+    *pstat = stat_buf;
     return 0;
 }
 
@@ -320,11 +321,13 @@ void read_request ( struct process_t* process )
         strncpy ( path, buf+4, len );
         path[len] = 0;
 
+        struct stat filestat;
+        stat ( fullname, &filestat );
         char fullname[256];
         char *prefix = doc_root;
         strcpy ( fullname, prefix );
         strcpy ( fullname + strlen ( prefix ), path );
-        s = get_index_file ( fullname );
+        s = get_index_file ( fullname, &filestat);
         if ( s == -1 )
         {
             process->response_code = 404;
@@ -351,9 +354,6 @@ void read_request ( struct process_t* process )
         {
             process->response_code = 200;
         }
-        
-        struct stat filestat;
-        stat ( fullname, &filestat );
 	
         char tempstring[256];
 
@@ -383,8 +383,6 @@ void read_request ( struct process_t* process )
 	    t=mktime(&tm);
 	    t-=timezone;
 	    gmtime_r(&t, &tm);
-	    printf("%ld\n",t);
-	    printf("%ld\n",filestat.st_mtime);	    
 	    if(t >= filestat.st_mtime){
 	      process->response_code = 304;
 	    }
@@ -773,7 +771,7 @@ int main ( int argc, char *argv[] )
         n = epoll_wait ( efd, events, MAXEVENTS, -1 );
         if ( n == -1 )
         {
-            perror ( "epoll" );
+            perror ( "epoll_wait" );
         }
         for ( i = 0; i < n; i++ )
         {
