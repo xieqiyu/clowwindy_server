@@ -23,6 +23,12 @@ fcntl.h
 -
 signal.h
 -
+time.h
+-
+langinfo.h
+-
+locale.h
+-
 sys/types.h
 -
 sys/socket.h
