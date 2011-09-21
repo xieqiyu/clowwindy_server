@@ -21,6 +21,8 @@ unistd.h
 -
 fcntl.h
 -
+signal.h
+-
 sys/types.h
 -
 sys/socket.h

@@ -5,6 +5,7 @@
 #include <netdb.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/epoll.h>
@@ -23,6 +24,7 @@
 #define STATUS_SEND_RESPONSE		2
 
 #define NO_SOCK -1
+#define NO_FILE -1
 
 #define header_404 "HTTP/1.0 404 Not found\r\nServer: myserver/1.0\r\nContent-Type: text/html\r\n\r\n<h1>Not found</h1>"
 #define header_400 "HTTP/1.0 400 Bad request\r\nServer: myserver/1.0\r\nContent-Type: text/html\r\n\r\n<h1>Bad request</h1>"
@@ -35,6 +37,7 @@ static int listen_sock;
 static int efd;
 static struct epoll_event event;
 static char *doc_root;
+static int current_total_processes;
 
 int setNonblocking(int fd)
 {
@@ -53,7 +56,8 @@ int setNonblocking(int fd)
 #endif
 }
 
-struct process_t* find_process_by_sock(int sock) {
+// 遍历查找，慢
+struct process_t* find_process_by_sock_slow(int sock) {
     int i;
     for (i=0;i<MAX_PORCESS;i++) {
         if (processes[i].sock == sock) {
@@ -61,6 +65,22 @@ struct process_t* find_process_by_sock(int sock) {
         }
     }
     return 0;
+}
+
+struct process_t* find_empty_process_for_sock(int sock) {
+  if (sock < MAX_PORCESS && sock >= 0 && processes[sock].sock == NO_SOCK) {
+    return &processes[sock];
+  } else {
+    return find_process_by_sock_slow(NO_SOCK);
+  }
+}
+
+struct process_t* find_process_by_sock(int sock) {
+  if (sock < MAX_PORCESS && sock >= 0 && processes[sock].sock == sock) {
+    return &processes[sock];
+  } else {
+    return find_process_by_sock_slow(sock);
+  }
 }
 
 void reset_process(struct process_t* process)
@@ -75,15 +95,32 @@ struct process_t* accept_sock(int listen_sock) {
     // 在ET模式下必须循环accept到返回-1为止
     while (1)
     {
-        struct process_t* process = find_process_by_sock(NO_SOCK);
-        if (process == 0) {
-            // 请求已满
-            return;
-        }
         struct sockaddr in_addr;
         socklen_t in_len;
         int infd;
         char hbuf[NI_MAXHOST], sbuf[NI_MAXSERV];
+	if (current_total_processes >= MAX_PORCESS) {
+            // 请求已满，accept之后直接挂断
+	    infd = accept (listen_sock, &in_addr, &in_len);
+	    if (infd == -1)
+	    {
+		if ((errno == EAGAIN) ||
+			(errno == EWOULDBLOCK))
+		{
+		    /* We have processed all incoming
+		      connections. */
+		    break;
+		}
+		else
+		{
+		    perror ("accept");
+		    break;
+		}
+	    }
+	    close(infd);
+            
+            return;
+        }
 
         in_len = sizeof in_addr;
         infd = accept (listen_sock, &in_addr, &in_len);
@@ -123,10 +160,11 @@ struct process_t* accept_sock(int listen_sock) {
             perror ("epoll_ctl");
             abort ();
         }
-        // slow, unneccessary
-// 	memset(process,0,sizeof(struct process_t));
+	struct process_t* process = find_empty_process_for_sock(infd);
+	current_total_processes++;
         reset_process(process);
         process->sock = infd;
+	process->fd = NO_FILE;
         process->status = STATUS_READ_REQUEST_HEADER;
     }
 }
@@ -182,8 +220,8 @@ void read_request(struct process_t* process) {
         }
         else if (count == 0)
         {
-            // 被客户端关闭连接，这不应该发生
-            handle_error (process, "connection closed by client");
+            // 被客户端关闭连接
+	    cleanup(process);
             return;
         } else if (count > 0) {
             process->read_pos += count;
@@ -380,8 +418,22 @@ void send_response(struct process_t *process) {
 }
 
 void cleanup(struct process_t *process) {
-    close(process->fd);
-    close(process->sock);
+  int s;  
+  if(process->sock != NO_SOCK) {
+	s = close(process->sock);
+	current_total_processes--;
+	if(s == NO_SOCK){
+	  perror("close sock");
+	}
+    }
+    if(process->fd != -1) {
+      s = close(process->fd);
+      if(s == NO_FILE){
+	printf("fd: %d\n",process->fd);
+	printf("\n");
+	perror("close file");
+      }
+    }
     process->sock = NO_SOCK;
     reset_process(process);
 }
@@ -472,11 +524,19 @@ void init_processes() {
   
 }
 
-int
-main (int argc, char *argv[])
+void sighandler(int sig)
+{
+  exit(0);
+}
+
+int main (int argc, char *argv[])
 {
     int s;
     struct epoll_event *events;
+    
+    signal(SIGABRT, &sighandler);
+    signal(SIGTERM, &sighandler);
+    signal(SIGINT, &sighandler);
 
     if (argc != 3)
     {
@@ -527,6 +587,9 @@ main (int argc, char *argv[])
         int n, i;
 
         n = epoll_wait (efd, events, MAXEVENTS, -1);
+	if (n == -1) {
+	    perror("epoll");
+	}
         for (i = 0; i < n; i++)
         {
             if ((events[i].events & EPOLLERR) ||

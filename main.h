@@ -1,7 +1,7 @@
 
 #define MAXEVENTS	4096
-#define MAX_PORCESS	1024
-#define BUF_SIZE	4096 * 2
+#define MAX_PORCESS	2048
+#define BUF_SIZE	4096
 
 #define MAX_URL_LENGTH	128
 

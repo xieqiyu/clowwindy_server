@@ -2,12 +2,12 @@
 BuildItems=@Variant(\x00\x00\x00\t\x00\x00\x00\x00\x01\x00\x00\x00\x0b\x00\x00\x00\x00\x01\x00\x00\x00\x14\x00e\x00p\x00o\x00l\x00l\x00_\x00t\x00e\x00s\x00t)
 
 [CMake]
-BuildDirs=/home/clowwindy/projects/epoll_test/build
+BuildDirs[$e]=$HOME/projects/epoll_test/build,$HOME/projects/epoll_test/release
 CMakeDir=/usr/share/cmake-2.8/Modules
 Current CMake Binary=file:///usr/bin/cmake
 CurrentBuildDir=file:///home/clowwindy/projects/epoll_test/build
 CurrentBuildType=Debug
-CurrentInstallDir=file:///usr/local/
+CurrentInstallDir=file:///usr/local
 ProjectRootRelative=./
 
 [Launch]
@@ -27,3 +27,6 @@ EnvironmentGroup=default
 Project Target=epoll_test,epoll_test
 Working Directory=
 isExecutable=false
+
+[MakeBuilder]
+Number Of Jobs=1
