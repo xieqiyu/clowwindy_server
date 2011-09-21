@@ -1,15 +1,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
-#include <sys/socket.h>
+#include <errno.h>
 #include <netdb.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/types.h>
+#include <sys/socket.h>
 #include <sys/epoll.h>
-#include <errno.h>
 #include <sys/stat.h>
-#include <unistd.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+
+#ifdef USE_SENDFILE
+#include <sys/sendfile.h>
+#endif
+
 #include "main.h"
 
 #define STATUS_READ_REQUEST_HEADER	0
@@ -106,7 +112,8 @@ struct process_t* accept_sock(int listen_sock) {
         s = setNonblocking (infd);
         if (s == -1)
             abort ();
-
+	int on = 1;
+	setsockopt (infd, SOL_TCP, TCP_CORK, &on, sizeof (on));
         //添加监视sock的读取状态
         event.data.fd = infd;
         event.events = EPOLLIN | EPOLLET;
@@ -225,6 +232,7 @@ void read_request(struct process_t* process) {
 		}
 		
                 int fd = open(fullname, O_RDONLY);
+		
                 process->fd = fd;
                 if (fd<0) {
                     process->response_code = 404;
@@ -235,6 +243,11 @@ void read_request(struct process_t* process) {
                 } else {
                     process->response_code = 200;
                 }
+                
+		struct stat filestat;
+		stat(fullname, &filestat);
+		process->total_length = filestat.st_size;
+		
                 process->status = STATUS_SEND_RESPONSE_HEADER;
                 //修改此sock的监听状态，改为监视写状态
                 event.data.fd = process->sock;
@@ -297,6 +310,27 @@ void send_response_header(struct process_t *process) {
 }
 
 void send_response(struct process_t *process) {
+#ifdef USE_SENDFILE
+  // 使用linux sendfile函数
+  while(1) {
+      int s = sendfile(process-> sock, process -> fd, &process->read_pos, process->total_length - process -> read_pos);
+      if (s == -1) {
+	  if (errno != EAGAIN)
+	  {
+	      handle_error (process, "sendfile");
+	      return;
+	  } else {
+	      // 写入到缓冲区已满了
+	      return;
+	  }
+      }
+      if (process->read_pos == process->total_length) {
+	// 读写完毕
+	cleanup(process);
+	return;
+      }
+    }
+#else
     //文件已经读完
     char end_of_file = 0;
     while (1) {
@@ -342,7 +376,7 @@ void send_response(struct process_t *process) {
             }
         }
     }
-
+#endif
 }
 
 void cleanup(struct process_t *process) {

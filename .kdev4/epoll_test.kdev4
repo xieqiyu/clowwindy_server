@@ -20,7 +20,7 @@ Name=New Native Application Configuration
 Type=Native Application
 
 [Launch][Launch Configuration 0][Data]
-Arguments=8081 /var/www
+Arguments=8081 /var/www/
 Dependencies=@Variant(\x00\x00\x00\t\x00\x00\x00\x00\x00)
 Dependency Action=Build
 EnvironmentGroup=default
