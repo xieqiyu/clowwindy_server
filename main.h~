@@ -1,7 +1,6 @@
 
-
-#define MAX_PORCESS	2048
-#define MAXEVENTS	4096
+#define MAXEVENTS	40960
+#define MAX_PORCESS	20480
 #define BUF_SIZE	4096
 
 #define MAX_URL_LENGTH	128
@@ -12,7 +11,7 @@
 
 #define USE_SENDFILE 1
 
-struct process_t {
+struct process {
     int sock;
     int status;
     int response_code;

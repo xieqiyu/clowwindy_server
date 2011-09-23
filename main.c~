@@ -43,7 +43,7 @@
 #define write_to_header(string_to_write) strcpy(process->buf + strlen(process->buf), string_to_write)
 
 
-static struct process_t processes[MAX_PORCESS];
+static struct process processes[MAX_PORCESS];
 
 static int listen_sock;
 static int efd;
@@ -69,7 +69,7 @@ int setNonblocking ( int fd )
 }
 
 // 遍历查找，慢
-struct process_t* find_process_by_sock_slow ( int sock )
+struct process* find_process_by_sock_slow ( int sock )
 {
     int i;
     for ( i=0;i<MAX_PORCESS;i++ )
@@ -82,7 +82,7 @@ struct process_t* find_process_by_sock_slow ( int sock )
     return 0;
 }
 
-struct process_t* find_empty_process_for_sock ( int sock )
+struct process* find_empty_process_for_sock ( int sock )
 {
     if ( sock < MAX_PORCESS && sock >= 0 && processes[sock].sock == NO_SOCK )
     {
@@ -94,7 +94,7 @@ struct process_t* find_empty_process_for_sock ( int sock )
     }
 }
 
-struct process_t* find_process_by_sock ( int sock )
+struct process* find_process_by_sock ( int sock )
 {
     if ( sock < MAX_PORCESS && sock >= 0 && processes[sock].sock == sock )
     {
@@ -106,14 +106,14 @@ struct process_t* find_process_by_sock ( int sock )
     }
 }
 
-void reset_process ( struct process_t* process )
+void reset_process ( struct process* process )
 {
     process->read_pos = 0;
     process->write_pos = 0;
 }
 
 
-struct process_t* accept_sock ( int listen_sock )
+struct process* accept_sock ( int listen_sock )
 {
     int s;
     // 在ET模式下必须循环accept到返回-1为止
@@ -185,7 +185,7 @@ struct process_t* accept_sock ( int listen_sock )
             perror ( "epoll_ctl" );
             abort ();
         }
-        struct process_t* process = find_empty_process_for_sock ( infd );
+        struct process* process = find_empty_process_for_sock ( infd );
         current_total_processes++;
         reset_process ( process );
         process->sock = infd;
@@ -229,7 +229,7 @@ int get_index_file ( char *filename_buf, struct stat *pstat )
     return 0;
 }
 
-void read_request ( struct process_t* process )
+void read_request ( struct process* process )
 {
     int sock = process->sock, s;
     char* buf=process->buf;
@@ -322,7 +322,6 @@ void read_request ( struct process_t* process )
         path[len] = 0;
 
         struct stat filestat;
-        stat ( fullname, &filestat );
         char fullname[256];
         char *prefix = doc_root;
         strcpy ( fullname, prefix );
@@ -443,7 +442,7 @@ void read_request ( struct process_t* process )
 }
 
 
-int write_all ( struct process_t *process, char* buf, int n )
+int write_all ( struct process *process, char* buf, int n )
 {
     int done_write = 0;
     int total_bytes_write = 0;
@@ -472,7 +471,7 @@ int write_all ( struct process_t *process, char* buf, int n )
 }
 
 
-void send_response_header ( struct process_t *process )
+void send_response_header ( struct process *process )
 {
     if ( process->response_code != 200 )
     {
@@ -504,7 +503,7 @@ void send_response_header ( struct process_t *process )
     }
 }
 
-void send_response ( struct process_t *process )
+void send_response ( struct process *process )
 {
 #ifdef USE_SENDFILE
     // 使用linux sendfile函数
@@ -587,7 +586,7 @@ void send_response ( struct process_t *process )
 #endif
 }
 
-void cleanup ( struct process_t *process )
+void cleanup ( struct process *process )
 {
     int s;
     if ( process->sock != NO_SOCK )
@@ -613,7 +612,7 @@ void cleanup ( struct process_t *process )
     reset_process ( process );
 }
 
-void handle_error ( struct process_t* process, char* error_string )
+void handle_error ( struct process* process, char* error_string )
 {
     cleanup ( process );
     perror ( error_string );
@@ -628,7 +627,7 @@ void handle_request ( int sock )
     }
     else
     {
-        struct process_t* process = find_process_by_sock ( sock );
+        struct process* process = find_process_by_sock ( sock );
         if ( process != 0 )
         {
             switch ( process->status )
