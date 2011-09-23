@@ -1,1 +1,0 @@
-/home/clowwindy/projects/epoll_test/build/CMakeFiles/epoll_test.dir
